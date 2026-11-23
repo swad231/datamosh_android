@@ -2,7 +2,14 @@
 
 package ru.datamosh.radio
 
+import android.app.WallpaperManager
+import android.content.ActivityNotFoundException
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
+import androidx.compose.material.icons.rounded.Wallpaper
 import android.os.Build
 import android.view.LayoutInflater
 import androidx.activity.compose.BackHandler
@@ -1043,6 +1050,15 @@ private fun MoreSheet(onDismiss: () -> Unit) {
                 icon = { Text("?", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) },
             ) { openLink("https://t.me/datafmsupport_bot", "feedback bot") }
 
+            val ctx = LocalContext.current
+            MenuRow(
+                text = "Живые обои с фоном DATAMOSH",
+                icon = { Icon(Icons.Rounded.Wallpaper, contentDescription = null, modifier = Modifier.size(22.dp)) },
+            ) {
+                openLiveWallpaperPicker(ctx)
+                onDismiss()
+            }
+
             // Hidden switch: tap 3 times, then long-press once -> toggles debug logging.
             Text(
                 "Версия приложения ${AppLog.versionName()} ($BUILD_DATE)",
@@ -1069,6 +1085,29 @@ private fun MoreSheet(onDismiss: () -> Unit) {
             )
         }
     }
+}
+
+/**
+ * Opens the system preview of our live wallpaper, where the user picks home / lock screen.
+ * Some firmwares don't support the direct preview; then fall back to the live wallpaper list.
+ */
+private fun openLiveWallpaperPicker(ctx: Context) {
+    AppLog.d("UI", "Open live wallpaper picker")
+    val preview = Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER)
+        .putExtra(
+            WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
+            ComponentName(ctx, LiveWallpaperService::class.java),
+        )
+    val chooser = Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER)
+    for (intent in listOf(preview, chooser)) {
+        try {
+            ctx.startActivity(intent)
+            return
+        } catch (e: ActivityNotFoundException) {
+            AppLog.e("UI", "No activity for ${intent.action}", e)
+        }
+    }
+    Toast.makeText(ctx, "Телефон не поддерживает живые обои", Toast.LENGTH_LONG).show()
 }
 
 @Composable
