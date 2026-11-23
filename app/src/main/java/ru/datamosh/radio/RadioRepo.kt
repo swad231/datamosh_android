@@ -51,6 +51,14 @@ private fun JSONObject.toTrack(): Track {
     return Track(optString("id"), title, optString("artist"), optString("art"))
 }
 
+/** One-off now-playing request, for the widget when nothing is polling. */
+fun fetchNowPlayingOnce(): Track? = runCatching {
+    JSONObject(String(httpGet(API_URL), Charsets.UTF_8))
+        .getJSONObject("now_playing")
+        .getJSONObject("song")
+        .toTrack()
+}.onFailure { AppLog.e("RADIO", "One-off now-playing request failed", it) }.getOrNull()
+
 /** Polls the AzuraCast now-playing API while the UI or the playback service is alive. */
 object RadioRepo {
     private val _state = MutableStateFlow(RadioState())

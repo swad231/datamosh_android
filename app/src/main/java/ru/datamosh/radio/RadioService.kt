@@ -25,10 +25,16 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 private const val ACTION_LIKE = "ru.datamosh.radio.LIKE"
+
+/** Whether the radio should be playing (playWhenReady). Read by the home screen widget. */
+object RadioPlayback {
+    val playing = MutableStateFlow(false)
+}
 
 class RadioService : MediaSessionService() {
     private var session: MediaSession? = null
@@ -77,6 +83,10 @@ class RadioService : MediaSessionService() {
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 AppLog.d("PLAYER", "State: ${stateName(state)}")
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                RadioPlayback.playing.value = playWhenReady
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -128,6 +138,7 @@ class RadioService : MediaSessionService() {
 
     override fun onDestroy() {
         AppLog.d("PLAYER", "Service destroyed")
+        RadioPlayback.playing.value = false
         scope.cancel()
         session?.release()
         session = null

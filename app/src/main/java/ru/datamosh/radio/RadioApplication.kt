@@ -7,5 +7,6 @@ class RadioApplication : Application() {
         super.onCreate()
         AppLog.init(this)
         LikesStore.init(this)
+        PlayerWidgets.start(this)
     }
 }
