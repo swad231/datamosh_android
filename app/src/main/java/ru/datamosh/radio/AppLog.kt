@@ -16,7 +16,7 @@ import java.util.Date
 import java.util.Locale
 
 /** Release date of this build in compact form (MMDDYY). */
-const val BUILD_DATE = "111826"
+const val BUILD_DATE = "112326"
 
 /**
  * Logging to the public Download folder.
