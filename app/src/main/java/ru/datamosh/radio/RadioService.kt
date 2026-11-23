@@ -14,7 +14,11 @@ import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
-import androidx.media3.session.MediaSessionService
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.MediaLibraryService.LibraryParams
+import androidx.media3.session.MediaLibraryService.MediaLibrarySession
+import androidx.media3.session.SessionError
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -30,14 +34,20 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 private const val ACTION_LIKE = "ru.datamosh.radio.LIKE"
+private const val MEDIA_ID_ROOT = "root"
+private const val MEDIA_ID_RADIO = "radio"
 
 /** Whether the radio should be playing (playWhenReady). Read by the home screen widget. */
 object RadioPlayback {
     val playing = MutableStateFlow(false)
 }
 
-class RadioService : MediaSessionService() {
-    private var session: MediaSession? = null
+/**
+ * Playback service. It is a MediaLibraryService (not just a session service) so that Android Auto
+ * and other media browsers can list what to play: a root folder with one item, the live stream.
+ */
+class RadioService : MediaLibraryService() {
+    private var session: MediaLibrarySession? = null
     private lateinit var player: ExoPlayer
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -105,8 +115,7 @@ class RadioService : MediaSessionService() {
             }
         })
 
-        session = MediaSession.Builder(this, live)
-            .setCallback(sessionCallback)
+        session = MediaLibrarySession.Builder(this, live, sessionCallback)
             .setMediaButtonPreferences(ImmutableList.of(likeButton(isCurrentLiked())))
             .build()
 
@@ -130,7 +139,7 @@ class RadioService : MediaSessionService() {
         }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
 
     override fun onTaskRemoved(rootIntent: android.content.Intent?) {
         if (!player.playWhenReady) stopSelf()
@@ -148,6 +157,20 @@ class RadioService : MediaSessionService() {
     }
 
     private val likeCommand = SessionCommand(ACTION_LIKE, Bundle.EMPTY)
+
+    // Live radio: no previous/next track and no seeking, so Android Auto and the notification
+    // don't show buttons that would only restart the stream.
+    private val liveRadioCommands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
+        .removeAll(
+            Player.COMMAND_SEEK_TO_PREVIOUS,
+            Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+            Player.COMMAND_SEEK_TO_NEXT,
+            Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+            Player.COMMAND_SEEK_BACK,
+            Player.COMMAND_SEEK_FORWARD,
+            Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM,
+        )
+        .build()
 
     private fun likeButton(liked: Boolean): CommandButton =
         CommandButton.Builder(if (liked) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED)
@@ -170,16 +193,17 @@ class RadioService : MediaSessionService() {
         }
     }
 
-    private val sessionCallback = object : MediaSession.Callback {
+    private val sessionCallback = object : MediaLibrarySession.Callback {
         override fun onConnect(
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): MediaSession.ConnectionResult {
-            val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+            val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
                 .add(likeCommand)
                 .build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(commands)
+                .setAvailablePlayerCommands(liveRadioCommands)
                 .setMediaButtonPreferences(ImmutableList.of(likeButton(isCurrentLiked())))
                 .build()
         }
@@ -193,6 +217,51 @@ class RadioService : MediaSessionService() {
             if (customCommand.customAction == ACTION_LIKE) toggleCurrentLike()
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
         }
+
+        // --- Browsing for Android Auto: root folder -> one playable item, the live stream. ---
+
+        override fun onGetLibraryRoot(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+            AppLog.d("PLAYER", "Library root requested by ${browser.packageName}")
+            return Futures.immediateFuture(LibraryResult.ofItem(rootItem(), params))
+        }
+
+        override fun onGetChildren(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            parentId: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = Futures.immediateFuture(
+            if (parentId == MEDIA_ID_ROOT) LibraryResult.ofItemList(ImmutableList.of(liveItem()), params)
+            else LibraryResult.ofError(SessionError.ERROR_BAD_VALUE),
+        )
+
+        override fun onGetItem(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            mediaId: String,
+        ): ListenableFuture<LibraryResult<MediaItem>> = Futures.immediateFuture(
+            when (mediaId) {
+                MEDIA_ID_ROOT -> LibraryResult.ofItem(rootItem(), null)
+                MEDIA_ID_RADIO -> LibraryResult.ofItem(liveItem(), null)
+                else -> LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+            },
+        )
+
+        // A browser asks to play an item by id (e.g. "Эфир" tapped in Android Auto): resolve it to the stream.
+        override fun onAddMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+        ): ListenableFuture<MutableList<MediaItem>> {
+            AppLog.d("PLAYER", "Play request from ${controller.packageName}: ${mediaItems.map { it.mediaId }}")
+            return Futures.immediateFuture(mediaItems.map { item(RadioRepo.state.value.now) }.toMutableList())
+        }
     }
 
     private fun stateName(s: Int) = when (s) {
@@ -203,8 +272,38 @@ class RadioService : MediaSessionService() {
         else -> s.toString()
     }
 
+    private fun rootItem(): MediaItem = MediaItem.Builder()
+        .setMediaId(MEDIA_ID_ROOT)
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle("DATAMOSH FM")
+                .setIsBrowsable(true)
+                .setIsPlayable(false)
+                .setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_RADIO_STATIONS)
+                .build(),
+        )
+        .build()
+
+    /** The live stream as a browsable list entry; the subtitle shows what is on air right now. */
+    private fun liveItem(): MediaItem {
+        val t = RadioRepo.state.value.now
+        return MediaItem.Builder()
+            .setMediaId(MEDIA_ID_RADIO)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle("Эфир DATAMOSH FM")
+                    .setArtist(t?.let { "${it.artist} — ${it.title}" } ?: "Интернет-радио")
+                    .setArtworkUri(Uri.parse("android.resource://$packageName/${R.drawable.logo_apk}"))
+                    .setIsBrowsable(false)
+                    .setIsPlayable(true)
+                    .setMediaType(MediaMetadata.MEDIA_TYPE_RADIO_STATION)
+                    .build(),
+            )
+            .build()
+    }
+
     private fun item(t: Track?): MediaItem = MediaItem.Builder()
-        .setMediaId("radio")
+        .setMediaId(MEDIA_ID_RADIO)
         .setUri(STREAM_URL)
         .setMediaMetadata(
             MediaMetadata.Builder()
